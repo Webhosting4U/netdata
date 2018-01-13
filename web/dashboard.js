@@ -2285,6 +2285,45 @@ var NETDATA = window.NETDATA || {};
         }
     };
 
+    NETDATA.intersectionObserver = {
+        observer: null,
+
+        options: {
+            root: null,
+            rootMargin: "0px",
+            threshold: null
+        },
+
+        handler: function(entries, observer) {
+            entries.forEach(function(entry) {
+                // console.log(entry);
+                var state = NETDATA.chartState(entry.target);
+                var old = state.__visibilityRatio;
+                state.__visibilityRatio = entry.intersectionRatio;
+
+                if(old === 0 && state.__visibilityRatio > 0) {
+                    //state.log("observer: VISIBLE");
+                    state.refresherEnable();
+                }
+                else if(old > 0 && state.__visibilityRatio === 0) {
+                    //state.log("observer: invisible");
+                    state.refresherDisable();
+                }
+            });
+        },
+
+        observe: function(state) {
+            // state.log("observed");
+            state.__visibilityRatio = 0;
+            this.observer.observe(state.element);
+        },
+
+        init: function() {
+            this.observer = new IntersectionObserver(this.handler, this.options);
+        }
+    };
+    NETDATA.intersectionObserver.init();
+
     // ----------------------------------------------------------------------------------------------------------------
     // Our state object, where all per-chart values are stored
 
@@ -2795,8 +2834,11 @@ var NETDATA = window.NETDATA || {};
                 if(that.element_legend !== null) that.element_legend.style.display = '';
                 if(that.element_legend_childs.toolbox !== null) that.element_legend_childs.toolbox.style.display = '';
                 if(that.element_legend_childs.resize_handler !== null) that.element_legend_childs.resize_handler.style.display = '';
+
+                if(that.updates_since_last_creation > 0)
+                    hideMessage();
+
                 resizeChart();
-                hideMessage();
             }
         };
 
@@ -4633,6 +4675,18 @@ var NETDATA = window.NETDATA || {};
                 return;
             }
 
+            if(this.updates_since_last_creation > 0 && this.updates_since_last_unhide === 0) {
+                // we have old data
+                // make sure the user see them
+                hideMessage();
+                resizeChart();
+            }
+            else if(this.updates_since_last_creation === 0) {
+                // make sure the user will see something while
+                // we load chart data
+                showLoading();
+            }
+
             if(this.debug === true)
                 this.log('updating from ' + this.data_url);
 
@@ -4683,50 +4737,38 @@ var NETDATA = window.NETDATA || {};
             });
         };
 
-        var __isVisible = function() {
-            var ret = true;
-
-            if(NETDATA.options.current.update_only_visible !== false) {
-                // tolerance is the number of pixels a chart can be off-screen
-                // to consider it as visible and refresh it as if was visible
-                var tolerance = 0;
-
-                that.tm.last_visible_check = Date.now();
-
-                var rect = that.element.getBoundingClientRect();
-
-                var screenTop = window.scrollY;
-                var screenBottom = screenTop + window.innerHeight;
-
-                var chartTop = rect.top + screenTop;
-                var chartBottom = chartTop + rect.height;
-
-                ret = !(rect.width === 0 || rect.height === 0 || chartBottom + tolerance < screenTop || chartTop - tolerance > screenBottom);
+        var __refresherWorkerId = null;
+        var refresherWorker = function() {
+            if(that.isVisible() === false) {
+                __refresherWorkerId = null;
+                hideChart();
+                return;
             }
 
-            if(that.debug === true)
-                that.log('__isVisible(): ' + ret);
+            if(NETDATA.options.refresher_stop === false)
+                that.autoRefresh();
 
-            return ret;
+            __refresherWorkerId = window.requestIdleCallback(refresherWorker, {timeout: 500});
         };
 
-        this.isVisible = function(nocache) {
-            // this.log('last_visible_check: ' + this.tm.last_visible_check + ', last_page_scroll: ' + NETDATA.options.last_page_scroll);
-
-            // caching - we do not evaluate the charts visibility
-            // if the page has not been scrolled since the last check
-            if((typeof nocache !== 'undefined' && nocache === true)
-                || typeof this.tmp.___isVisible___ === 'undefined'
-                || this.tm.last_visible_check <= NETDATA.options.last_page_scroll) {
-                this.tmp.___isVisible___ = __isVisible();
-                if (this.tmp.___isVisible___ === true) unhideChart();
-                else hideChart();
+        this.refresherDisable = function() {
+            if(__refresherWorkerId !== null) {
+                window.cancelIdleCallback(__refresherWorkerId);
+                __refresherWorkerId = null;
             }
 
-            if(this.debug === true)
-                this.log('isVisible(' + nocache + '): ' + this.tmp.___isVisible___);
+            hideChart();
+        };
 
-            return this.tmp.___isVisible___;
+        this.refresherEnable = function() {
+            if(__refresherWorkerId === null) {
+                unhideChart();
+                __refresherWorkerId = window.requestIdleCallback(refresherWorker, {timeout: 50});
+            }
+        };
+
+        this.isVisible = function() {
+            return this.__visibilityRatio > 0;
         };
 
         this.isAutoRefreshable = function() {
@@ -4931,6 +4973,7 @@ var NETDATA = window.NETDATA || {};
         // INITIALIZATION
 
         initDOM();
+        NETDATA.intersectionObserver.observe(this);
         init('fast');
     };
 
@@ -5236,6 +5279,8 @@ var NETDATA = window.NETDATA || {};
             && NETDATA.chartRefresherLastRun > NETDATA.options.last_page_scroll
             && NETDATA.chartRefresherRunsAfterParseDom > 10
         ) {
+            NETDATA.options.refresher_stop = true;
+
             setTimeout(
                 NETDATA.chartRefresher,
                 NETDATA.options.current.idle_lost_focus
@@ -5250,6 +5295,8 @@ var NETDATA = window.NETDATA || {};
         NETDATA.chartRefresherLastRun = now;
 
         if( now < NETDATA.options.on_scroll_refresher_stop_until ) {
+            NETDATA.options.refresher_stop = true;
+
             NETDATA.chartRefresherTimeoutId = NETDATA.timeout.set(
                 NETDATA.chartRefresher,
                 NETDATA.chartRefresherWaitTime()
@@ -5260,6 +5307,8 @@ var NETDATA = window.NETDATA || {};
         }
 
         if( now < NETDATA.options.auto_refresher_stop_until ) {
+            NETDATA.options.refresher_stop = true;
+
             NETDATA.chartRefresherTimeoutId = NETDATA.timeout.set(
                 NETDATA.chartRefresher,
                 NETDATA.chartRefresherWaitTime()
@@ -5270,6 +5319,8 @@ var NETDATA = window.NETDATA || {};
         }
 
         if(NETDATA.options.pause === true) {
+            NETDATA.options.refresher_stop = true;
+
             // console.log('auto-refresher is paused');
             NETDATA.chartRefresherTimeoutId = NETDATA.timeout.set(
                 NETDATA.chartRefresher,
@@ -5281,6 +5332,8 @@ var NETDATA = window.NETDATA || {};
         }
 
         if(typeof NETDATA.options.pauseCallback === 'function') {
+            NETDATA.options.refresher_stop = true;
+
             // console.log('auto-refresher is calling pauseCallback');
 
             NETDATA.options.pause = true;
@@ -5291,6 +5344,7 @@ var NETDATA = window.NETDATA || {};
             return;
         }
 
+        /*
         if(NETDATA.options.current.parallel_refresher === false) {
             // console.log('auto-refresher is calling chartRefresherNoParallel(0)');
             NETDATA.chartRefresherNoParallel(0, function() {
@@ -5302,8 +5356,11 @@ var NETDATA = window.NETDATA || {};
             // console.log('chartRefresher() end5 (no parallel, nested)');
             return;
         }
+        */
 
         if(NETDATA.options.updated_dom === true) {
+            NETDATA.options.refresher_stop = true;
+
             // the dom has been updated
             // get the dom parts again
             // console.log('auto-refresher is calling parseDom()');
@@ -5313,6 +5370,9 @@ var NETDATA = window.NETDATA || {};
         }
 
         if(NETDATA.globalSelectionSync.active() === false) {
+            NETDATA.options.refresher_stop = false;
+
+            /*
             var parallel = [];
             var targets = NETDATA.options.targets;
             var len = targets.length;
@@ -5351,7 +5411,10 @@ var NETDATA = window.NETDATA || {};
             //else {
             //    console.log('auto-refresher nothing to do');
             //}
+            */
         }
+        else
+            NETDATA.options.refresher_stop = true;
 
         // run the next refresh iteration
         NETDATA.chartRefresherTimeoutId = NETDATA.timeout.set(
