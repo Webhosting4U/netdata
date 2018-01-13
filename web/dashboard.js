@@ -406,7 +406,6 @@ var NETDATA = window.NETDATA || {};
 
             abort_ajax_on_scroll: false,            // kill pending ajax page scroll
             async_on_scroll: false,                 // sync/async onscroll handler
-            onscroll_worker_duration_threshold: 30, // time in ms, for async scroll handler
 
             retries_on_data_failures: 3, // how many retries to make if we can't fetch chart data from the server
 
@@ -748,13 +747,13 @@ var NETDATA = window.NETDATA || {};
 
         NETDATA.options.on_scroll_refresher_stop_until =
             NETDATA.options.last_page_scroll
-            + ((NETDATA.options.current.async_on_scroll === true) ? 1000 : 0);
+            + ((NETDATA.options.current.async_on_scroll === true) ? 10000 : 0);
     };
 
     NETDATA.onscroll_end_delay = function() {
         NETDATA.options.on_scroll_refresher_stop_until =
             Date.now()
-            + ((NETDATA.options.current.async_on_scroll === true) ? NETDATA.options.current.onscroll_worker_duration_threshold : 0);
+            + ((NETDATA.options.current.async_on_scroll === true) ? 30 : 0);
     };
 
     NETDATA.onscroll_updater_timeout_id = undefined;
@@ -775,32 +774,11 @@ var NETDATA = window.NETDATA || {};
         if(NETDATA.options.abort_ajax_on_scroll === true)
             NETDATA.abort_all_refreshes();
 
-        if(NETDATA.options.current.parallel_refresher === false) {
-            var targets = NETDATA.options.targets;
-            var len = targets.length;
-
-            while (len--)
-               if(targets[len].running === false)
-                   targets[len].isVisible();
-        }
-
-        //var end = Date.now();
-        //var dt = end - start;
-        // console.log('count = ' + targets.length + ', average = ' + Math.round(dt / targets.length).toString() + ', dt = ' + dt);
-
         NETDATA.onscroll_end_delay();
     };
 
-    NETDATA.scrollUp = false;
-    NETDATA.scrollY = window.scrollY;
     NETDATA.onscroll = function() {
-        //console.log('onscroll() begin');
-
         NETDATA.onscroll_start_delay();
-        NETDATA.chartRefresherReschedule();
-
-        NETDATA.scrollUp = (window.scrollY > NETDATA.scrollY);
-        NETDATA.scrollY = window.scrollY;
 
         if(NETDATA.onscroll_updater_timeout_id)
             NETDATA.timeout.clear(NETDATA.onscroll_updater_timeout_id);
@@ -2842,7 +2820,7 @@ var NETDATA = window.NETDATA || {};
             }
         };
 
-        var canBeRendered = function(uncached_visibility) {
+        var canBeRendered = function() {
             if(that.debug === true)
                 that.log('canBeRendered() called');
 
@@ -2852,7 +2830,7 @@ var NETDATA = window.NETDATA || {};
                     NETDATA.options.current.stop_updates_when_focus_is_lost === false ||
                     that.updates_since_last_unhide === 0
                 )
-                && isHidden() === false && that.isVisible(uncached_visibility) === true
+                && isHidden() === false && that.isVisible() === true
             );
 
             if(that.debug === true)
@@ -2864,13 +2842,6 @@ var NETDATA = window.NETDATA || {};
         // https://github.com/petkaantonov/bluebird/wiki/Optimization-killers
         var callChartLibraryUpdateSafely = function(data) {
             var status;
-
-            // we should not do this here
-            // if we prevent rendering the chart then:
-            // 1. globalSelectionSync will be wrong
-            // 2. globalPanAndZoom will be wrong
-            //if(canBeRendered(true) === false)
-            //    return false;
 
             if(NETDATA.options.fake_chart_rendering === true)
                 return true;
@@ -2901,13 +2872,6 @@ var NETDATA = window.NETDATA || {};
         // https://github.com/petkaantonov/bluebird/wiki/Optimization-killers
         var callChartLibraryCreateSafely = function(data) {
             var status;
-
-            // we should not do this here
-            // if we prevent rendering the chart then:
-            // 1. globalSelectionSync will be wrong
-            // 2. globalPanAndZoom will be wrong
-            //if(canBeRendered(true) === false)
-            //    return false;
 
             if(NETDATA.options.fake_chart_rendering === true)
                 return true;
@@ -4737,6 +4701,29 @@ var NETDATA = window.NETDATA || {};
             });
         };
 
+        var chartUpdateEvery = function() {
+            var data_update_every = that.data_update_every;
+            if(typeof that.force_update_every === 'number')
+                data_update_every = that.force_update_every;
+
+            return data_update_every;
+        };
+
+        var updateChartInDt = function() {
+            var now = Date.now();
+
+            var dt = (that.tm.last_autorefreshed + chartUpdateEvery()) - now;
+            if(dt < 0) dt = 0;
+
+            if(that.current.force_update_at !== 0) {
+                var fdt = that.current.force_update_at - now;
+                if(fdt < 0) dt = 0;
+                else if(fdt < dt) dt = fdt;
+            }
+
+            return dt;
+        };
+
         var __refresherWorkerId = null;
         var refresherWorker = function() {
             if(that.isVisible() === false) {
@@ -4745,15 +4732,21 @@ var NETDATA = window.NETDATA || {};
                 return;
             }
 
-            if(NETDATA.options.refresher_stop === false)
+            var dt = chartUpdateEvery();
+            if(NETDATA.options.refresher_stop === false) {
+                dt += updateChartInDt();
                 that.autoRefresh();
+            }
+            if(dt <= 0) dt = 10;
+            else if(dt > 500) dt = 500;
 
-            __refresherWorkerId = window.requestIdleCallback(refresherWorker, {timeout: 500});
+            that.log('will be updated in ' + dt + ' ms');
+            __refresherWorkerId = NETDATA.timeout.set(refresherWorker, dt);
         };
 
         this.refresherDisable = function() {
             if(__refresherWorkerId !== null) {
-                window.cancelIdleCallback(__refresherWorkerId);
+                NETDATA.timeout.clear(__refresherWorkerId);
                 __refresherWorkerId = null;
             }
 
@@ -4761,9 +4754,21 @@ var NETDATA = window.NETDATA || {};
         };
 
         this.refresherEnable = function() {
-            if(__refresherWorkerId === null) {
-                unhideChart();
-                __refresherWorkerId = window.requestIdleCallback(refresherWorker, {timeout: 50});
+            if (__refresherWorkerId === null) {
+                var dt = updateChartInDt();
+                if(dt <= 0) dt = 10;
+                else if(dt > 500) dt = 500;
+
+                if (NETDATA.options.current.async_on_scroll === true) {
+                    __refresherWorkerId = NETDATA.timeout.set(function () {
+                        unhideChart();
+                        refresherWorker();
+                    }, dt);
+                }
+                else {
+                    unhideChart();
+                    __refresherWorkerId = NETDATA.timeout.set(refresherWorker, dt);
+                }
             }
         };
 
@@ -4874,10 +4879,7 @@ var NETDATA = window.NETDATA || {};
                 return false;
             }
 
-            var data_update_every = this.data_update_every;
-            if(typeof this.force_update_every === 'number')
-                data_update_every = this.force_update_every;
-
+            var data_update_every = chartUpdateEvery();
             if(now - this.tm.last_autorefreshed >= data_update_every) {
                 if(this.debug === true)
                     this.log('canBeAutoRefreshed(): It is time to update me. Now: ' + now.toString() + ', last_autorefreshed: ' + this.tm.last_autorefreshed + ', data_update_every: ' + data_update_every + ', delta: ' + (now - this.tm.last_autorefreshed).toString());
@@ -5204,54 +5206,6 @@ var NETDATA = window.NETDATA || {};
 
     // ----------------------------------------------------------------------------------------------------------------
 
-    // this is purely sequential charts refresher
-    // it is meant to be autonomous
-    NETDATA.chartRefresherNoParallel = function(index, callback) {
-        if(NETDATA.options.debug.main_loop === true)
-            console.log('NETDATA.chartRefresherNoParallel(' + index + ')');
-
-        if(NETDATA.options.updated_dom === true) {
-            // the dom has been updated
-            // get the dom parts again
-            NETDATA.parseDom(callback);
-            return;
-        }
-        if(index >= NETDATA.options.targets.length) {
-            if(NETDATA.options.debug.main_loop === true)
-                console.log('waiting to restart main loop...');
-
-            NETDATA.options.auto_refresher_fast_weight = 0;
-            callback();
-        }
-        else {
-            var state = NETDATA.options.targets[index];
-
-            if(NETDATA.options.auto_refresher_fast_weight < NETDATA.options.current.fast_render_timeframe) {
-                if(NETDATA.options.debug.main_loop === true)
-                    console.log('fast rendering...');
-
-                if(state.isVisible() === true)
-                    NETDATA.timeout.set(function() {
-                        state.autoRefresh(function () {
-                            NETDATA.chartRefresherNoParallel(++index, callback);
-                        });
-                    }, 0);
-                else
-                    NETDATA.chartRefresherNoParallel(++index, callback);
-            }
-            else {
-                if(NETDATA.options.debug.main_loop === true) console.log('waiting for next refresh...');
-                NETDATA.options.auto_refresher_fast_weight = 0;
-
-                NETDATA.timeout.set(function() {
-                    state.autoRefresh(function() {
-                        NETDATA.chartRefresherNoParallel(++index, callback);
-                    });
-                }, NETDATA.options.current.idle_between_charts);
-            }
-        }
-    };
-
     NETDATA.chartRefresherWaitTime = function() {
         return NETDATA.options.current.idle_parallel_loops;
     };
@@ -5260,15 +5214,6 @@ var NETDATA = window.NETDATA || {};
     NETDATA.chartRefresherLastRun = 0;
     NETDATA.chartRefresherRunsAfterParseDom = 0;
     NETDATA.chartRefresherTimeoutId = undefined;
-
-    NETDATA.chartRefresherReschedule = function() {
-        if(NETDATA.options.current.async_on_scroll === true) {
-            if(NETDATA.chartRefresherTimeoutId)
-                NETDATA.timeout.clear(NETDATA.chartRefresherTimeoutId);
-            NETDATA.chartRefresherTimeoutId = NETDATA.timeout.set(NETDATA.chartRefresher, NETDATA.options.current.onscroll_worker_duration_threshold);
-            //console.log('chartRefresherReschedule()');
-        }
-    };
 
     NETDATA.chartRefresher = function() {
         // console.log('chartRefresher() begin ' + (Date.now() - NETDATA.chartRefresherLastRun).toString() + ' ms since last run');
@@ -5343,20 +5288,6 @@ var NETDATA = window.NETDATA || {};
             // console.log('chartRefresher() end4 (nested)');
             return;
         }
-
-        /*
-        if(NETDATA.options.current.parallel_refresher === false) {
-            // console.log('auto-refresher is calling chartRefresherNoParallel(0)');
-            NETDATA.chartRefresherNoParallel(0, function() {
-                NETDATA.chartRefresherTimeoutId = NETDATA.timeout.set(
-                    NETDATA.chartRefresher,
-                    NETDATA.options.current.idle_between_loops
-                );
-            });
-            // console.log('chartRefresher() end5 (no parallel, nested)');
-            return;
-        }
-        */
 
         if(NETDATA.options.updated_dom === true) {
             NETDATA.options.refresher_stop = true;
