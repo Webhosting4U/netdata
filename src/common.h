@@ -132,6 +132,11 @@
 #include <zlib.h>
 #endif
 
+#ifdef NETDATA_WITH_BROTLI
+#include <brotli/decode.h>
+#include <brotli/encode.h>
+#endif
+
 #ifdef HAVE_CAPABILITY
 #include <sys/capability.h>
 #endif

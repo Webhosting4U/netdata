@@ -91,6 +91,12 @@ AC_ARG_WITH(
     [with_zlib="yes"]
 )
 AC_ARG_WITH(
+    [brotli],
+    [AS_HELP_STRING([--without-brotli], [build without brotli @<:@default enabled@:>@])],
+    ,
+    [with_brotli="yes"]
+)
+AC_ARG_WITH(
     [math],
     [AS_HELP_STRING([--without-math], [build without math @<:@default enabled@:>@])],
     ,
@@ -243,6 +249,40 @@ else
     with_zlib="no"
 fi
 AC_MSG_RESULT([${with_zlib}])
+
+
+# -----------------------------------------------------------------------------
+# brotli
+
+PKG_CHECK_MODULES(
+    [LIBBROTLIENC],
+    [libbrotlienc],
+    [have_brotlienc=yes],
+    [have_brotlienc=no]
+)
+PKG_CHECK_MODULES(
+    [LIBBROTLIDEC],
+    [libbrotlidec],
+    [have_brotlidec=yes],
+    [have_brotlidec=no]
+)
+
+if test "${have_brotlienc}" = "yes" -a "${have_brotlidec}" = "yes"; then
+    have_brotli="yes"
+else
+    have_brotli="no"
+fi
+
+AC_MSG_CHECKING([if brotli should be used])
+if test "${with_brotli}" != "no" -a "${have_brotli}" = "yes"; then
+    with_brotli="yes"
+    AC_DEFINE([NETDATA_WITH_BROTLI], [1], [brotli usability])
+    OPTIONAL_BROTLI_CLFAGS="${LIBBROTLIENC_CFLAGS} ${LIBBROTLIDEC_CFLAGS}"
+    OPTIONAL_BROTLI_LIBS="${LIBBROTLIENC_LIBS} ${LIBBROTLIDEC_LIBS}"
+else
+    with_brotli="no"
+fi
+AC_MSG_RESULT([${with_brotli}])
 
 
 # -----------------------------------------------------------------------------
@@ -463,7 +503,7 @@ if test "${enable_lto}" != "no"; then
 fi
 if test "${have_lto}" = "yes"; then
     oCFLAGS="${CFLAGS}"
-    CFLAGS="${CFLAGS} -flto ${OPTIONAL_MATH_CLFAGS} ${OPTIONAL_NFACCT_CLFAGS} ${OPTIONAL_ZLIB_CLFAGS} ${OPTIONAL_UUID_CLFAGS} ${OPTIONAL_LIBCAP_CFLAGS} ${OPTIONAL_IPMIMONITORING_CFLAGS}"
+    CFLAGS="${CFLAGS} -flto ${OPTIONAL_MATH_CLFAGS} ${OPTIONAL_NFACCT_CLFAGS} ${OPTIONAL_ZLIB_CLFAGS} ${OPTIONAL_BROTLI_CLFAGS} ${OPTIONAL_UUID_CLFAGS} ${OPTIONAL_LIBCAP_CFLAGS} ${OPTIONAL_IPMIMONITORING_CFLAGS}"
     ac_cv_c_lto_cross_compile="${enable_lto}"
     test "${ac_cv_c_lto_cross_compile}" != "yes" && ac_cv_c_lto_cross_compile="no"
     AC_C_LTO
@@ -503,6 +543,8 @@ AC_SUBST([OPTIONAL_NFACCT_CLFAGS])
 AC_SUBST([OPTIONAL_NFACCT_LIBS])
 AC_SUBST([OPTIONAL_ZLIB_CLFAGS])
 AC_SUBST([OPTIONAL_ZLIB_LIBS])
+AC_SUBST([OPTIONAL_BROTLI_CLFAGS])
+AC_SUBST([OPTIONAL_BROTLI_LIBS])
 AC_SUBST([OPTIONAL_UUID_CLFAGS])
 AC_SUBST([OPTIONAL_UUID_LIBS])
 AC_SUBST([OPTIONAL_LIBCAP_CFLAGS])
